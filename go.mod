@@ -1,4 +1,4 @@
-module lisabooknook
+module ble-booknook
 
 go 1.25.4
 

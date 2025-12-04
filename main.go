@@ -4,25 +4,45 @@ import (
 	"bytes"
 	"device/nrf"
 	"encoding/binary"
-	"errors"
 	"machine"
 	"math"
+	"strconv"
 	"time"
 
 	"tinygo.org/x/bluetooth"
 )
 
 const (
-	ScanInterval = 30 * time.Second
-	// ScanInterval = 10 * time.Second
 	ScanDuration = 500 * time.Millisecond
-
-	MyDevId uint16 = 1
+	// So that it fits with 3 digits.
+	ParamScale = 99
 
 	DEBUG = false
 )
 
+// Animation IDs
+const (
+	AnimStatic  = 1
+	AnimBlink   = 2
+	AnimBreathe = 3
+)
+
+type AnimationState struct {
+	id    int
+	param int
+
+	stepCount  int32        // Current position in the fade cycle
+	blinkState bool         // Current state for blink (true = ON, false = OFF)
+	ticker     *time.Ticker // Ticker for the animation
+}
+
 var (
+	DeviceIdString string
+	MyDevId        uint16 = func() uint16 {
+		id, _ := strconv.Atoi(DeviceIdString)
+		return uint16(id)
+	}()
+
 	adapter = bluetooth.DefaultAdapter
 	led     = machine.LED
 	onOff   = machine.D111
@@ -30,12 +50,24 @@ var (
 	pwm     = machine.PWM0
 	pwmTop  = pwm.Top()
 
+	anim = AnimationState{
+		id:     AnimStatic,
+		param:  0,
+		ticker: time.NewTicker(30 * time.Second),
+	}
+
 	touchState = false
 	animPin    = func() machine.Pin {
 		if DEBUG {
 			return led
 		}
 		return onOff
+	}()
+	scanInterval = func() time.Duration {
+		if DEBUG {
+			return 5 * time.Second
+		}
+		return 30 * time.Second
 	}()
 	pwmCh uint8
 )
@@ -54,17 +86,14 @@ type beaconT struct {
 	Minor uint16
 }
 
-func scanPlease() (*beaconT, error) {
+func scanPlease(cc chan<- beaconT) {
 	// println("scanning for 63d88905a2d64a7e8b2ed0de379c232a")
-	cc := make(chan beaconT, 1)
 	t := time.Now()
 	adapter.Scan(func(adapter *bluetooth.Adapter, device bluetooth.ScanResult) {
 		if time.Since(t) > ScanDuration {
 			adapter.StopScan()
-			close(cc)
 			return
 		}
-		// println("packet")
 		for _, e := range device.AdvertisementPayload.ManufacturerData() {
 			if e.CompanyID == 76 && bytes.Compare(e.Data[2:2+16], []byte{0x63, 0xd8, 0x89, 0x05, 0xa2, 0xd6, 0x4a, 0x7e, 0x8b, 0x2e, 0xd0, 0xde, 0x37, 0x9c, 0x23, 0x2a}) == 0 {
 				adapter.StopScan()
@@ -72,18 +101,13 @@ func scanPlease() (*beaconT, error) {
 				var b beaconT
 				must("binary.Read", binary.Read(r, binary.BigEndian, &b))
 				if !(b.Major == 0 || b.Major == MyDevId) {
-					continue
+					return
 				}
 				cc <- b
 				return
 			}
 		}
 	})
-	b, ok := <-cc
-	if !ok {
-		return nil, errors.New("not found")
-	}
-	return &b, nil
 }
 
 func main() {
@@ -96,152 +120,135 @@ func main() {
 	blink(2)
 	disablePeripherals()
 
-	var animId = 0
-	var animParam uint8 = 127
-
 	touch.Configure(machine.PinConfig{Mode: machine.PinInputPulldown})
 	must("SetInterrupt", touch.SetInterrupt(machine.PinToggle, func(p machine.Pin) {
 		var t bool = p.Get()
 		if touchState != t {
 			touchState = t
-			var brightness uint8 = 0
+			var brightness int = 0
 			if touchState {
-				brightness = 255
+				brightness = ParamScale // Maximum.
 			}
-			setAnimation(AnimStatic, brightness)
-			// Immediate feedback.
-			runStatic(float64(brightness) / 255.0)
+			anim.setAnimation(AnimStatic, brightness)
 		}
 	}))
 
-	go animate()
+	scanT := time.NewTicker(scanInterval)
+	bChan := make(chan beaconT, 1)
 
 	for {
-		beacon, err := scanPlease()
-		if err == nil {
-			nAnimId, nAnimParam := beacon.Minor/1000, beacon.Minor%1000
-			if int(nAnimId) != animId || uint8(nAnimParam) != animParam {
-				setAnimation(int(nAnimId), uint8(nAnimParam))
+		select {
+		case beacon, ok := <-bChan:
+			// println("got beacon", beacon.Major, beacon.Minor, ok)
+			if ok {
+				nAnimId, nAnimParam := beacon.Minor/100, beacon.Minor%100
+				anim.setAnimation(int(nAnimId), int(nAnimParam))
 			}
+		case <-scanT.C:
+			scanPlease(bChan)
+		case <-anim.ticker.C:
+			anim.tick()
 		}
-		// Doesn't change anything. Most of the lower conso is disabling USBD.
-		// enterDeepSleep(4 * time.Second)
-		time.Sleep(ScanInterval)
 	}
-}
-
-// Animation IDs
-const (
-	AnimStatic    = 1
-	AnimBlink     = 2
-	AnimEaseInOut = 3
-)
-
-type AnimationState struct {
-	id    int     // Current animation ID
-	param float64 // Normalized parameter (0.0 to 1.0)
-
-	stepCount  int32 // Current position in the fade cycle
-	blinkState bool  // Current state for blink (true = ON, false = OFF)
-}
-
-var anim AnimationState = AnimationState{
-	id:    AnimStatic,
-	param: 0.0,
 }
 
 const easeInSteps = 768
 const easeInStepValue float64 = math.Pi * 2 / easeInSteps
 
-const easeInOutMaxDelayMs = 20.0
-const easeInOutMinDelayMs = 1.0
+const breatheMaxDelayMs = 20.0
+const breatheMinDelayMs = 1.0
 
-const blinkMaxPeriodMs = 5000.0
+const blinkMaxPeriodMs = 6000.0
 const blinkMinPeriodMs = 100.0
 
-// The param255 (0-255) is scaled to a float (0.0-1.0).
-func setAnimation(id int, param255 uint8) {
-	// println("setAnimation", id, param255)
-	normalizedParam := float64(param255) / 255.0
+func (anim *AnimationState) setAnimation(id int, intParam int) {
+	if anim.id == id && anim.param == intParam {
+		return
+	}
+	shouldPwm := false
+	floatParam := float64(intParam) / ParamScale
+	var newDelay time.Duration
+	switch id {
+	case AnimStatic:
+		if floatParam == 0.0 || floatParam == 1.0 {
+			shouldPwm = false
+		} else {
+			shouldPwm = true
+		}
+		anim.ticker.Stop()
+	case AnimBlink:
+		periodMs := (1.0-floatParam)*(blinkMaxPeriodMs-blinkMinPeriodMs) + blinkMinPeriodMs
+		delayMs := periodMs / 2.0
+		newDelay = time.Millisecond * time.Duration(delayMs)
+		shouldPwm = false
+	case AnimBreathe:
+		delayMs := (1.0-floatParam)*(breatheMaxDelayMs-breatheMinDelayMs) + breatheMinDelayMs
+		newDelay = time.Millisecond * time.Duration(delayMs)
+		shouldPwm = true
+	default:
+		return
+	}
 	if anim.id != id {
 		anim.stepCount = 0
 		anim.blinkState = false
 	}
 	anim.id = id
-	anim.param = normalizedParam
-	shouldPwm := false
-	switch id {
-	case AnimStatic:
-		if normalizedParam == 0.0 || normalizedParam == 1.0 {
-			shouldPwm = false
-		} else {
-			shouldPwm = true
-		}
-	case AnimBlink:
-		shouldPwm = false
-	case AnimEaseInOut:
-		shouldPwm = true
-	}
+	anim.param = intParam
+	// println("setAnimation", anim.id, anim.param, intParam)
 	if shouldPwm {
 		setupPWM()
 	} else {
 		pwm.PWM.ENABLE.Set(nrf.PWM_ENABLE_ENABLE_Disabled << nrf.PWM_ENABLE_ENABLE_Pos)
 	}
+	switch anim.id {
+	case AnimStatic:
+		anim.runStatic()
+	case AnimBlink:
+		anim.ticker.Reset(newDelay)
+	case AnimBreathe:
+		anim.ticker.Reset(newDelay)
+	}
 }
 
 // runStatic applies a fixed brightness based on the parameter.
-// Parameter 0.0 is off, 1.0 is full brightness.
-func runStatic(param float64) {
-	if param == 0.0 {
+func (anim *AnimationState) runStatic() {
+	floatParam := float64(anim.param) / ParamScale
+	if floatParam == 0.0 {
 		animPin.Low()
-	} else if param == 1.0 {
+	} else if floatParam == 1.0 {
 		animPin.High()
 	} else {
-		brightness := uint32(param * float64(pwmTop))
+		brightness := uint32(floatParam * float64(pwmTop))
 		pwm.Set(pwmCh, brightness)
 	}
 }
 
-// runEaseInOutStep calculates the next step's brightness and returns the required delay.
-func runEaseInOutStep(state *AnimationState) time.Duration {
-	delayMs := (1.0-state.param)*(easeInOutMaxDelayMs-easeInOutMinDelayMs) + easeInOutMinDelayMs
-	i := state.stepCount % easeInSteps
+// runBreatheStep sets the brightness based on a sinusoidal function.
+func (anim *AnimationState) runBreatheStep() {
+	i := anim.stepCount % easeInSteps
+	anim.stepCount++
 	zeroOne := (math.Cos(float64(i)*easeInStepValue) + 1) / 2
-	brightness := uint32(zeroOne * float64(pwmTop))
+	const NotSureWhyIHaveToScaleLikeThisToGetMaxBrightness float64 = 2.0
+	brightness := uint32(zeroOne * float64(pwmTop) * NotSureWhyIHaveToScaleLikeThisToGetMaxBrightness)
 	pwm.Set(pwmCh, brightness)
-	state.stepCount++
-	return time.Millisecond * time.Duration(delayMs)
 }
 
-// runBlinkStep toggles the LED ON/OFF and returns the required delay.
-func runBlinkStep(state *AnimationState) time.Duration {
-	periodMs := (1.0-state.param)*(blinkMaxPeriodMs-blinkMinPeriodMs) + blinkMinPeriodMs
-	delayMs := periodMs / 2.0
-	state.blinkState = !state.blinkState
-	if state.blinkState {
+// runBlinkStep toggles the LED.
+func (anim *AnimationState) runBlinkStep() {
+	anim.blinkState = !anim.blinkState
+	if anim.blinkState {
 		animPin.Low()
 	} else {
 		animPin.High()
 	}
-	return time.Millisecond * time.Duration(delayMs)
 }
 
-func animate() {
-	var delay time.Duration
-	for {
-		switch anim.id {
-		case AnimStatic:
-			runStatic(anim.param)
-			delay = time.Second * 10
-		case AnimBlink:
-			delay = runBlinkStep(&anim)
-		case AnimEaseInOut:
-			delay = runEaseInOutStep(&anim)
-		default:
-			animPin.Low()
-			delay = time.Second * 10
-		}
-		time.Sleep(delay)
+func (state *AnimationState) tick() {
+	switch anim.id {
+	case AnimBlink:
+		anim.runBlinkStep()
+	case AnimBreathe:
+		anim.runBreatheStep()
 	}
 }
 
