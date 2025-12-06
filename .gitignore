@@ -1,2 +1,4 @@
 *.elf
 *.uf2
+testali/
+zephyr/

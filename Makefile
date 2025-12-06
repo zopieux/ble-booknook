@@ -9,7 +9,7 @@ program-%.uf2: main.go go.mod go.sum
 
 flash: program-1.uf2
 	udisksctl mount -b /dev/disk/by-label/NICENANO
-	cp $< /run/media/alex/NICENANO
+	cp $< /run/media/*/NICENANO
 
 flash-monitor: flash
 	tinygo monitor
