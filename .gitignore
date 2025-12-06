@@ -1,5 +1,6 @@
 *.elf
 *.uf2
 .build*
+.envrc.local
 testali/
 zephyr/
