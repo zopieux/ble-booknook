@@ -1,0 +1,25 @@
+name: Build and upload
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+
+      - uses: acifani/setup-tinygo@b2ba42b249c7d3efdfe94166ec0f48b3191404f7
+        with:
+          tinygo-version: '0.39.0'
+
+      - name: Build
+        run: make -j8
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+        with:
+          name: uf2-programs
+          retention-days: 90
+          path: |
+            program*.uf2
