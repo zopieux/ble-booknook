@@ -25,6 +25,8 @@ const (
 	AnimStatic  = 1
 	AnimBlink   = 2
 	AnimBreathe = 3
+
+	SetScanInterval = 9
 )
 
 type AnimationState struct {
@@ -141,8 +143,14 @@ func main() {
 		case beacon, ok := <-bChan:
 			// println("got beacon", beacon.Major, beacon.Minor, ok)
 			if ok {
-				nAnimId, nAnimParam := beacon.Minor/100, beacon.Minor%100
-				anim.setAnimation(int(nAnimId), int(nAnimParam))
+				nId, nParam := beacon.Minor/100, beacon.Minor%100
+				if nId == SetScanInterval {
+					if nParam >= 1 {
+						scanT.Reset(time.Second * time.Duration(nParam))
+					}
+				} else {
+					anim.setAnimation(int(nId), int(nParam))
+				}
 			}
 		case <-scanT.C:
 			scanPlease(bChan)
