@@ -2,10 +2,8 @@ module ble-booknook
 
 go 1.25.4
 
-require tinygo.org/x/bluetooth v0.13.0
-
-// replace tinygo.org/x/bluetooth => github.com/zopieux/tinygo-bluetooth v1
-replace tinygo.org/x/bluetooth => ./vendored/bluetooth
+// TODO: update to normal version once dbd5524332e5 is merged upstream.
+require tinygo.org/x/bluetooth v0.13.1-0.20251206083437-dbd5524332e5
 
 require (
 	github.com/go-ole/go-ole v1.2.6 // indirect
