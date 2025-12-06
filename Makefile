@@ -18,4 +18,7 @@ flash: program-1.uf2
 flash-monitor: flash
 	tinygo monitor
 
+clean:
+	rm -rf program-*.uf2 .build-*
+
 .PHONY: flash flash-monitor
