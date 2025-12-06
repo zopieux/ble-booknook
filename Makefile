@@ -4,8 +4,12 @@ PROGRAMS := $(patsubst %,program-%.uf2,$(PROGRAM_NUMBERS))
 
 all: $(PROGRAMS)
 
-program-%.uf2: main.go go.mod go.sum
-	tinygo build -target=nicenano -o $@ -ldflags="-X 'main.DeviceIdString=$*'"
+program-%.uf2: main.go generator/generate.go go.mod go.sum
+	rm -rf ".build-$*"
+	mkdir ".build-$*"
+	cp main.go ".build-$*"
+	go run generator/generate.go "$*" "$(SECRETUUID)" > ".build-$*/constants.go"
+	( cd ".build-$*" && tinygo build -target=nicenano -o $@ && mv $@ .. )
 
 flash: program-1.uf2
 	udisksctl mount -b /dev/disk/by-label/NICENANO

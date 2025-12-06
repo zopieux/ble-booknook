@@ -1,4 +1,5 @@
 *.elf
 *.uf2
+.build*
 testali/
 zephyr/

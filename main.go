@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"machine"
 	"math"
-	"strconv"
 	"time"
 
 	"tinygo.org/x/bluetooth"
@@ -39,12 +38,6 @@ type AnimationState struct {
 }
 
 var (
-	DeviceIdString string
-	MyDevId        uint16 = func() uint16 {
-		id, _ := strconv.Atoi(DeviceIdString)
-		return uint16(id)
-	}()
-
 	adapter = bluetooth.DefaultAdapter
 	led     = machine.LED
 	onOff   = machine.D111
@@ -89,7 +82,6 @@ type beaconT struct {
 }
 
 func scanPlease(cc chan<- beaconT) {
-	// println("scanning for 63d88905a2d64a7e8b2ed0de379c232a")
 	t := time.Now()
 	adapter.Scan(func(adapter *bluetooth.Adapter, device bluetooth.ScanResult) {
 		if time.Since(t) > ScanDuration {
@@ -97,12 +89,12 @@ func scanPlease(cc chan<- beaconT) {
 			return
 		}
 		for _, e := range device.AdvertisementPayload.ManufacturerData() {
-			if e.CompanyID == 76 && bytes.Compare(e.Data[2:2+16], []byte{0x63, 0xd8, 0x89, 0x05, 0xa2, 0xd6, 0x4a, 0x7e, 0x8b, 0x2e, 0xd0, 0xde, 0x37, 0x9c, 0x23, 0x2a}) == 0 {
+			if e.CompanyID == 76 && bytes.Compare(e.Data[2:2+16], SecretUuid) == 0 {
 				adapter.StopScan()
 				r := bytes.NewReader(e.Data[2+16:])
 				var b beaconT
 				must("binary.Read", binary.Read(r, binary.BigEndian, &b))
-				if !(b.Major == 0 || b.Major == MyDevId) {
+				if !(b.Major == 0 || b.Major == DeviceId) {
 					return
 				}
 				cc <- b
@@ -141,11 +133,11 @@ func main() {
 	for {
 		select {
 		case beacon, ok := <-bChan:
-			// println("got beacon", beacon.Major, beacon.Minor, ok)
 			if ok {
 				nId, nParam := beacon.Minor/100, beacon.Minor%100
 				if nId == SetScanInterval {
 					if nParam >= 1 {
+						blink(1)
 						scanT.Reset(time.Second * time.Duration(nParam))
 					}
 				} else {
@@ -202,7 +194,6 @@ func (anim *AnimationState) setAnimation(id int, intParam int) {
 	}
 	anim.id = id
 	anim.param = intParam
-	// println("setAnimation", anim.id, anim.param, intParam)
 	if shouldPwm {
 		setupPWM()
 	} else {
@@ -275,52 +266,6 @@ func must(action string, err error) {
 		}
 	}
 }
-
-// RTC0, RTC1 already used
-// var rtc = nrf.RTC2
-// const irq = nrf.IRQ_RTC2
-// var rtc_wakeup volatile.Register8
-// func initRTC() {
-// 	rtc.TASKS_START.Set(1)
-// 	intr := interrupt.New(irq, func(intr interrupt.Interrupt) {
-// 		if rtc.EVENTS_COMPARE[0].Get() != 0 {
-// 			rtc.EVENTS_COMPARE[0].Set(0)
-// 			rtc.INTENCLR.Set(nrf.RTC_INTENSET_COMPARE0)
-// 			rtc.EVENTS_COMPARE[0].Set(0)
-// 			rtc_wakeup.Set(1)
-// 		}
-// 	})
-// 	rtc.INTENSET.Set(nrf.RTC_INTENSET_OVRFLW)
-// 	intr.SetPriority(0xc0) // low priority
-// 	intr.Enable()
-// }
-// func nanosecondsToTicks(ns int64) int64 {
-// 	return int64(ns * 64 / 1953125)
-// }
-// // enterDeepSleep puts the device into System OFF mode with RTC wakeup
-// func enterDeepSleep(t time.Duration) {
-// 	disablePeripherals()
-// 	initRTC()
-// 	d := nanosecondsToTicks(t.Nanoseconds())
-// 	tt := uint32(d) & 0x7fffff // 23 bits (to be on the safe side)
-// 	rtcSleep(tt)
-// 	// Enable deep sleep in ARM core (no effect lol)
-// 	// enableDeepSleep()
-// }
-// func rtcSleep(ticks uint32) {
-// 	rtc.INTENSET.Set(nrf.RTC_INTENSET_COMPARE0)
-// 	rtc_wakeup.Set(0)
-// 	rtc.CC[0].Set((rtc.COUNTER.Get() + ticks) & 0x00ffffff)
-// 	for rtc_wakeup.Get() == 0 {
-// 		arm.Asm("wfe")
-// 	}
-// }
-// func enableDeepSleep() {
-// 	// Set SLEEPDEEP bit in ARM System Control Register
-// 	const SCB_SCR = 0xE000ED10
-// 	scr := (*volatile.Register32)(unsafe.Pointer(uintptr(SCB_SCR)))
-// 	scr.SetBits(1 << 2) // SLEEPDEEP bit
-// }
 
 func disablePeripherals() {
 	if !DEBUG {

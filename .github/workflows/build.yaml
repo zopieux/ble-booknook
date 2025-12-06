@@ -14,7 +14,9 @@ jobs:
           tinygo-version: '0.39.0'
 
       - name: Build
-        run: make -j8
+        run: make -j$(nproc)
+        env:
+          SECRETUUID: ${{ secrets.UUID }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
