@@ -24,4 +24,5 @@ jobs:
           name: uf2-programs
           retention-days: 90
           path: |
+            control.uf2
             program*.uf2
